@@ -1,0 +1,45 @@
+# Python bytecode & caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Package & Build Artifacts
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Databases & Runtime State
+*.sqlite
+*.db
+
+# Scratch & Temporary Output (Keep .gitkeep)
+scratch/*
+!scratch/.gitkeep
+artifacts/
+
+# Environment & Credentials (Secrets)
+.env
+.env.*
+!.env.example
+*.env
+credentials
+credentials.json
+secrets.json
+
+# System / IDE
+.DS_Store
+.vscode/
+.idea/
+

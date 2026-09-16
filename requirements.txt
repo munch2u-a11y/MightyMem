@@ -1,0 +1,9 @@
+# MightyMem core runtime dependencies
+numpy>=1.24.0
+setuptools>=68.0.0
+
+# Optional local ML/Embedding support
+torch>=2.0.0
+
+# Optional test suite dependencies
+pytest>=8.0.0

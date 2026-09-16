@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mightymem"
+version = "0.1.0"
+description = "MightyMem: Local autonomous agent memory continuity & multi-channel router powered by Context Loom JIT memory and Habitus AI"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "MightyMem Contributors" }
+]
+keywords = [
+    "ai-agent",
+    "local-llm",
+    "memory",
+    "rag",
+    "jit-compiler",
+    "context-loom",
+    "habitus-ai",
+    "telegram-bot",
+    "discord-bot",
+    "piper-voice",
+    "tts-stt",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.0",
+    "torch>=2.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/mightymem/mightymem"
+Documentation = "https://github.com/mightymem/mightymem/tree/main/docs"
+Repository = "https://github.com/mightymem/mightymem"
+Issues = "https://github.com/mightymem/mightymem/issues"
+
+[project.scripts]
+mightymem = "context_loom.cli:main"
+context-loom = "context_loom.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["context_loom*", "habitus_ai*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

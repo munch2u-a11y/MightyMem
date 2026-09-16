@@ -1,0 +1,2 @@
+# MightyMem standalone installation
+-e .

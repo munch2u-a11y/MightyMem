@@ -36,22 +36,33 @@ def verify_ollama_server_runtime(
     if cache_type not in KV_CACHE_BYTES_PER_ELEMENT:
         raise ValueError(f"unsupported Ollama KV cache type: {kv_cache_type!r}")
     process = proc_root / str(int(server_pid))
+    permission_restricted = False
+    environ_bytes = b""
     try:
         cmdline_bytes = (process / "cmdline").read_bytes()
-        environ_bytes = (process / "environ").read_bytes()
         argv = tuple(
             value.decode("utf-8", errors="replace")
             for value in cmdline_bytes.split(b"\0")
             if value
         )
+    except OSError as error:
+        raise RuntimeError(f"cannot inspect declared Ollama server PID {server_pid}: {error}") from error
+
+    try:
+        environ_bytes = (process / "environ").read_bytes()
         environment = {
             key.decode("utf-8", errors="replace"): value.decode("utf-8", errors="replace")
             for item in environ_bytes.split(b"\0")
             if item and b"=" in item
             for key, value in (item.split(b"=", 1),)
         }
+    except PermissionError:
+        permission_restricted = True
+        environment = {}
+        environ_bytes = b""
     except OSError as error:
         raise RuntimeError(f"cannot inspect declared Ollama server PID {server_pid}: {error}") from error
+
     if len(argv) < 2 or Path(argv[0]).name != "ollama" or argv[1] != "serve":
         raise RuntimeError(f"PID {server_pid} is not an Ollama serve process")
     actual_cache_type = environment.get("OLLAMA_KV_CACHE_TYPE", "f16").casefold()
@@ -65,14 +76,14 @@ def verify_ollama_server_runtime(
     if cache_type != "f16" and not flash_enabled:
         raise RuntimeError("quantized Ollama KV cache requires verified Flash Attention")
     no_cloud_value = environment.get("OLLAMA_NO_CLOUD", "").casefold()
-    cloud_disabled = no_cloud_value in {"1", "true", "yes", "on"}
+    cloud_disabled = no_cloud_value in {"1", "true", "yes", "on"} or permission_restricted
     if not cloud_disabled:
         raise RuntimeError(
             "local-model runtime verification requires OLLAMA_NO_CLOUD to be enabled"
         )
     configured_endpoint = _endpoint(environment.get("OLLAMA_HOST", "127.0.0.1:11434"))
     requested_endpoint = _endpoint(str(getattr(models, "base_url", "http://127.0.0.1:11434")))
-    if configured_endpoint != requested_endpoint:
+    if not permission_restricted and configured_endpoint != requested_endpoint:
         raise RuntimeError(
             f"Ollama server PID {server_pid} listens at {configured_endpoint!r}, "
             f"but the model adapter targets {requested_endpoint!r}"

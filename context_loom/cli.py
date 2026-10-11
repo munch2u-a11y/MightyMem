@@ -147,6 +147,15 @@ def parser() -> argparse.ArgumentParser:
     credentials_cmd.add_argument("action", nargs="?", choices=["list", "set", "path"], default="list")
     credentials_cmd.add_argument("key", nargs="?", default=None, help="Credential key name (e.g., TELEGRAM_BOT_TOKEN)")
     credentials_cmd.add_argument("value", nargs="?", default=None, help="Credential secret value to store")
+
+    daemon_cmd = subcommands.add_parser(
+        "daemon", help="run 24/7 autonomous background consciousness daemon for MightyMem"
+    )
+    daemon_cmd.add_argument("--db", default="mightymem_daemon.sqlite", help="Path to persistent SQLite database")
+    daemon_cmd.add_argument("--scope", default="default", help="Memory scope partition")
+    daemon_cmd.add_argument("--model", default="granite4.1:8b", help="Local LLM model name via Ollama")
+    daemon_cmd.add_argument("--embed-model", default="qwen3-embedding:0.6b", help="Local embedding model name via Ollama")
+    daemon_cmd.add_argument("--ollama-url", default="http://127.0.0.1:11434", help="Ollama API base URL")
     return result
 
 
@@ -351,6 +360,12 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     print(f"  {k}: [Not Configured]")
             return 0
+
+    if args.command == "daemon":
+        from scripts.mightymem_daemon import main as daemon_main
+        sys.argv = [sys.argv[0], "--db", args.db, "--scope", args.scope, "--model", args.model, "--embed-model", args.embed_model, "--ollama-url", args.ollama_url]
+        return daemon_main()
+
     raise RuntimeError(f"unhandled command: {args.command}")
 
 

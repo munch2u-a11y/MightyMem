@@ -1,0 +1,15 @@
+[Unit]
+Description=MightyMem 24/7 Autonomous Background Agent Daemon
+After=network.target ollama.service
+
+[Service]
+Type=simple
+User=nemo
+WorkingDirectory=/home/nemo/MightyMem
+ExecStart=/usr/bin/python3 /home/nemo/MightyMem/scripts/mightymem_daemon.py --db /home/nemo/MightyMem/mightymem_daemon.sqlite
+Restart=always
+RestartSec=5s
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

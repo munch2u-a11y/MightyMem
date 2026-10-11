@@ -35,6 +35,8 @@ from .retrieval import (
     scope_blind_text,
 )
 from .runtime import BoundedFileRuntime
+from .summarizer import FactSummaryItem, RollingFactSummarizer
+from .topical import TopicalFrame, TopicalTracker
 
 from habitus_ai.continual_mind import atomic_json
 from habitus_ai.integrated_agent import MEMORY_RECALL_ABILITY
@@ -285,6 +287,8 @@ class HabitusLoomAgent(MemoryAgent):
         taste_schema=None,
         allow_test_models=False,
         private_thinking_policy="adaptive",
+        intent_cortex=None,
+        capture_backend_state=False,
     ) -> None:
         combined_already_exists = (Path(directory).resolve() / "combined-runtime.json").exists()
         self.loom = None
@@ -383,6 +387,8 @@ class HabitusLoomAgent(MemoryAgent):
             self.multi_hop_lane,
             self.y_cipher_lane,
         ]
+        self.topical_tracker = TopicalTracker(self.loom.store)
+        self.rolling_summarizer = RollingFactSummarizer(self.loom, model_adapter=getattr(models, "chat", None))
         self.loom_runtime = BoundedFileRuntime(
             workspace,
             self.loom,
@@ -410,6 +416,21 @@ class HabitusLoomAgent(MemoryAgent):
         self._loom_logical_now = float(latest_time) if latest_time is not None else None
         atomic_json(self.directory / "combined-runtime.json", self.composition())
         self._raw_model_complete = None
+        # Optional embedding intent cortex. When installed it replaces substring
+        # routing in _stage_and_capability; the returned contract is identical.
+        self.intent_cortex = intent_cortex
+        if intent_cortex == "embedding":
+            from .intent_cortex import EmbeddingIntentCortex
+
+            self.intent_cortex = EmbeddingIntentCortex(self.models)
+        self.intent_decisions: list[dict[str, Any]] = []
+        self._backend_extractor = None
+        self.backend_states: list[dict[str, Any]] = []
+        self.backend_state_errors: list[str] = []
+        if capture_backend_state:
+            from .backend_state import BackendStateExtractor
+
+            self._backend_extractor = BackendStateExtractor()
         if not combined_already_exists:
             self.save(label="context-loom-attached")
 
@@ -735,8 +756,20 @@ class HabitusLoomAgent(MemoryAgent):
             "observed": result.receipt.result,
         }
 
+    def _stage_and_capability(self, text: str) -> tuple[str, str]:
+        cortex = getattr(self, "intent_cortex", None)
+        if cortex is not None:
+            decision = cortex.classify(text)
+            self.intent_decisions.append({
+                "text": text, "stage": decision.stage,
+                "capability_id": decision.capability_id, "label": decision.label,
+                "confidence": decision.confidence, "margin": decision.margin,
+            })
+            return decision.stage, decision.capability_id
+        return self._substring_stage_and_capability(text)
+
     @staticmethod
-    def _stage_and_capability(text: str) -> tuple[str, str]:
+    def _substring_stage_and_capability(text: str) -> tuple[str, str]:
         lowered = text.casefold()
         normalized = " ".join(lowered.replace("_", " ").replace("-", " ").split())
         if normalized in {"report", "report result", "finish", "final response"}:
@@ -889,6 +922,14 @@ class HabitusLoomAgent(MemoryAgent):
             ability_id=ability_id,
             arguments=arguments,
         )
+        # Record the cortex's own state at the moment it perceived this input.
+        # This is recurrent dynamics, not a function of the utterance text.
+        if getattr(self, "_backend_extractor", None) is not None:
+            try:
+                state = self._backend_extractor.extract(pulse)
+                self.backend_states.append({"content": content, "state": state})
+            except Exception as error:  # noqa: BLE001
+                self.backend_state_errors.append(f"{type(error).__name__}: {error}")
         if not is_explicit_user_preference(content):
             return pulse
         human_source = self.profile.human_name.casefold()

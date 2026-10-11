@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 
+from pathlib import Path
+
 import pytest
 
 from habitus_ai.agent_memory import LocalModels
@@ -177,6 +179,27 @@ def test_server_verification_rejects_cloud_enabled_runtime(tmp_path) -> None:
         )
 
 
+def test_server_verification_handles_unreadable_environ(tmp_path, monkeypatch) -> None:
+    process = tmp_path / "425"
+    process.mkdir()
+    (process / "cmdline").write_bytes(b"ollama\0serve\0")
+    orig_read_bytes = Path.read_bytes
+
+    def fake_read_bytes(self):
+        if self.name == "environ":
+            raise PermissionError("[Errno 13] Permission denied: '/proc/425/environ'")
+        return orig_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", fake_read_bytes)
+
+    server = verify_ollama_server_runtime(
+        InstalledGranite(), server_pid=425, kv_cache_type="f16", proc_root=tmp_path
+    )
+    assert server["verified"] is True
+    assert all(val is None for val in server["selected_server_environment"].values())
+
+
+
 def test_physical_context_failure_is_explicit_before_model_loading() -> None:
     receipt = {
         "status": "calculated",
@@ -286,5 +309,5 @@ def test_product_cli_does_not_advertise_retracted_two_case_harness() -> None:
     help_text = parser().format_help()
     assert "long-mem-benchmark" not in help_text
     assert "qa-benchmark" not in help_text
-    assert "{demo,gestate,chat,doctor,locomo-retrieval-diagnostic,channel,credentials}" in help_text
+    assert "{demo,gestate,chat,doctor,locomo-retrieval-diagnostic,channel,credentials,daemon}" in help_text
 

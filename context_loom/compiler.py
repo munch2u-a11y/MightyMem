@@ -45,9 +45,20 @@ class ContextBudgetExceeded(ValueError):
 
 
 @dataclass(slots=True)
+class AdaptiveBudgetPolicy:
+    enabled: bool = True
+    base_tokens: int = 800
+    min_tokens: int = 750
+    max_tokens: int = 1450
+    depth_scaling_step: int = 250
+    multi_hop_boost: int = 300
+
+
+@dataclass(slots=True)
 class CompilerConfig:
     model_context_tokens: int = 2048
     reserved_output_tokens: int = 448
+    adaptive_budget: AdaptiveBudgetPolicy = field(default_factory=AdaptiveBudgetPolicy)
     # None shows every eligible capability; the token budget is the only
     # thing that decides how many actually fit.
     max_visible_capabilities: int | None = None
@@ -71,6 +82,8 @@ class CompilerConfig:
             "exact": 1.15,
             "habitus_graph": 1.10,
             "semantic": 1.05,
+            "summary": 0.95,
+            "topical": 0.85,
             "procedure": 0.9,
             "recent": 0.62,
             "subjective": 0.42,
@@ -95,6 +108,14 @@ class CompilerConfig:
     def max_input_tokens(self) -> int:
         return self.model_context_tokens - self.reserved_output_tokens
 
+    def calculate_adaptive_target(self, max_depth: int = 1, is_multi_hop: bool = False) -> int:
+        if not self.adaptive_budget.enabled:
+            return self.max_input_tokens
+        depth_boost = self.adaptive_budget.depth_scaling_step * max(0, max_depth - 1)
+        intent_boost = self.adaptive_budget.multi_hop_boost if is_multi_hop else 0
+        target = self.adaptive_budget.base_tokens + depth_boost + intent_boost
+        return max(self.adaptive_budget.min_tokens, min(self.adaptive_budget.max_tokens, target))
+
 
 class ContextCompiler:
     """Builds a new evidence and capability packet before every model call."""
@@ -103,13 +124,24 @@ class ContextCompiler:
         "work": "ACTIVE WORK",
         "evidence": "DIRECT SEMANTIC & COSINE OVERLAP",
         "multi_hop": "SUBJECTIVE RELEVANCE & MULTI-HOP VAULTS",
+        "topical": "TOPICAL ORIENTATION & DRIFT",
+        "summary": "ROLLING FACTUAL SUMMARY",
         "continuity": "RECENCY & CONVERSATIONAL CONTINUITY",
         "observations": "LATEST VERIFIED OBSERVATIONS",
         "personal": "BOUNDED PERSONAL CONTINUITY",
         "procedures": "RELEVANT VERIFIED PROCEDURES",
         "private": "PRIVATE STATE",
     }
-    SECTION_ORDER = ("work", "evidence", "multi_hop", "personal", "procedures", "continuity")
+    SECTION_ORDER = (
+        "topical",
+        "summary",
+        "work",
+        "evidence",
+        "multi_hop",
+        "personal",
+        "procedures",
+        "continuity",
+    )
 
     def __init__(
         self,
@@ -173,6 +205,20 @@ class ContextCompiler:
             ):
                 return False, "derived claim lacks an assessed supporting source"
         return True, "evidence status admitted"
+
+    optional_selection_policy = "weighted score-discounted reciprocal lane rank within exact token budget"
+    optional_admission_reason = "highest fused utility within budget"
+
+    def _order_optional_candidates(self, candidates):
+        """Composition hook; the default preserves native admission ordering."""
+        return sorted(candidates, key=lambda c: (
+            -(self._utility(c) / max(1.0, math.sqrt(self.token_counter.count(c.text) / 24.0))),
+            -self._utility(c), c.id,
+        ))
+
+    def _candidate_admitted(self, candidate, added_tokens):
+        """Allow a compositor to account for actual accepted context space."""
+        pass
 
     def _utility(self, candidate: Candidate) -> float:
         utility = sum(
@@ -417,11 +463,28 @@ class ContextCompiler:
             capabilities=selected_capabilities,
             current_input=current_input,
         )
+        # Determine adaptive max input budget based on candidate depth and query intent
+        max_depth = 1
+        for cand in candidates.values():
+            if "y_cipher_depth" in cand.lane_scores or "y_depth" in cand.metadata:
+                depth = int(cand.metadata.get("y_depth", 1))
+                if depth > max_depth:
+                    max_depth = depth
+
+        query_lower = current_input.casefold()
+        is_multi_hop = len(key_terms(current_input)) >= 3 or any(
+            kw in query_lower for kw in ("both", "and", "all", "relationship", "between", "common", "visited")
+        )
+        effective_max_tokens = min(
+            self.config.max_input_tokens,
+            self.config.calculate_adaptive_target(max_depth=max_depth, is_multi_hop=is_multi_hop),
+        )
+
         base_tokens = self.token_counter.count(base_rendered)
-        if base_tokens > self.config.max_input_tokens:
+        if base_tokens > effective_max_tokens:
             raise ContextBudgetExceeded(
                 f"fixed packet content requires {base_tokens} tokens; "
-                f"input budget is {self.config.max_input_tokens}"
+                f"input budget is {effective_max_tokens}"
             )
 
         trusted: list[Candidate] = []
@@ -496,13 +559,8 @@ class ContextCompiler:
             (candidate for candidate in trusted if candidate.hard),
             key=lambda c: (0 if c.section == "work" else 1, -self._utility(c), c.id),
         )
-        soft = sorted(
-            (candidate for candidate in trusted if not candidate.hard),
-            key=lambda c: (
-                -(self._utility(c) / max(1.0, math.sqrt(self.token_counter.count(c.text) / 24.0))),
-                -self._utility(c),
-                c.id,
-            ),
+        soft = self._order_optional_candidates(
+            candidate for candidate in trusted if not candidate.hard
         )
         selected_ids: set[str] = set()
         section_counts: dict[str, int] = defaultdict(int)
@@ -567,11 +625,11 @@ class ContextCompiler:
                     current_input=current_input,
                 )
                 total = self.token_counter.count(rendered)
-            if total > self.config.max_input_tokens:
+            if total > effective_max_tokens:
                 if required:
                     raise ContextBudgetExceeded(
                         f"mandatory candidate {candidate.id} would require {total} tokens; "
-                        f"input budget is {self.config.max_input_tokens}"
+                        f"input budget is {effective_max_tokens}"
                     )
                 manifest.append(
                     ManifestEntry(
@@ -586,6 +644,7 @@ class ContextCompiler:
                     )
                 )
                 return
+            self._candidate_admitted(candidate, total - used_tokens)
             used_tokens = total
             sections[candidate.section].append(candidate.text)
             section_counts[candidate.section] += 1
@@ -596,7 +655,7 @@ class ContextCompiler:
                     candidate.source_record_ids,
                     dict(candidate.lane_scores),
                     True,
-                    "mandatory" if required else "highest fused utility within budget",
+                    "mandatory" if required else self.optional_admission_reason,
                     token_cost,
                     utility,
                     dict(candidate.lane_ranks),
@@ -660,9 +719,7 @@ class ContextCompiler:
                 "capability_schemas_rendered_in_packet": self.config.render_capability_schemas,
                 "candidate_count": len(candidates),
                 "admitted_candidate_count": len(selected_ids),
-                "selection_policy": (
-                    "weighted score-discounted reciprocal lane rank within exact token budget"
-                ),
+                "selection_policy": self.optional_selection_policy,
             },
         )
         self.store.save_packet(packet)

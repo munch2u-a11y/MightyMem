@@ -1,4 +1,4 @@
-# MightyMem (MightyMind)
+# MightyMem (MightyMemory)
 
 > **Mighty Local Autonomous Agents Powered by Context Loom JIT Memory & Habitus AI**
 
